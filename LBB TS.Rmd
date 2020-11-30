@@ -1,0 +1,171 @@
+---
+title: "LBB TS"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data and Library Loading 
+
+```{r}
+library(tidyverse) 
+library(lubridate)
+library(forecast)
+library(TTR) 
+library(MLmetrics)
+library(tseries) 
+library(fpp)
+library(TSstudio)
+library(padr)
+```
+```{r}
+crime <- read.csv("data_input/crime.csv")
+head(crime)
+```
+
+```{r}
+glimpse(crime)
+```
+
+Untuk mempersempit scope dari report ini, maka akan dipilih satu jenis crime untuk dianalisis lebih lanjut
+
+```{r}
+sort(table(crime$Primary.Type))
+```
+```{r}
+length(unique(crime$Description))
+```
+
+```{r}
+crimeclean <- crime %>% 
+  mutate(
+    Date = mdy_hms(Date),
+    Primary.Type = as.factor(Primary.Type),
+    District = as.factor(District),
+    Community.Area = as.factor(Community.Area),
+    Year = as.factor(Year),
+    Arrest = as.factor(Arrest),
+    Domestic = as.factor(Domestic)) %>% 
+      
+  select(-c(Case.Number, Block, IUCR, Beat, Ward, FBI.Code, X.Coordinate, Y.Coordinate, Updated.On, Latitude, Longitude, Location, Description, Community.Area))
+```
+```{r}
+crime_offense <- crimeclean %>% 
+  filter(Primary.Type == "SEX OFFENSE") %>% 
+  mutate(datetime = floor_date(Date, unit = "hour"))
+anyNA(crime_offense)
+glimpse(crime_offense)
+```
+Agregasi Data perJam 
+
+```{r}
+crime_agg <- crime_offense %>% 
+  group_by(datetime) %>% 
+  summarise(Cases = n_distinct(ID)) %>% 
+  ungroup()
+
+head(crime_agg)
+```
+# Objek time series
+
+```{r}
+max(crime_agg$datetime)
+min(crime_agg$datetime)
+```
+Data harus di pad terlebih dahulu untuke mengisi value waktu yang kosong, lalu value NA pada cases akan diisi dengan angka 0
+```{r}
+crime_agg_pad <- crime_agg %>% 
+  pad(start_val = ymd("2001-01-01"), end_val = ymd("2020-11-21")) %>% 
+  mutate(Cases = replace_na(Cases, replace = 0))
+
+dim(crime_agg_pad)
+```
+Pembuatan objek time series
+
+```{r}
+crime_ts <- ts(crime_agg_pad$Cases, frequency = 24)
+crime_dec <- head(crime_ts, 500) %>% 
+  decompose()
+crime_dec %>% autoplot()
+
+```
+
+```{r}
+msts_crime <- msts(crime_agg_pad[1:174337,2], seasonal.periods = c(24, 24*7))
+
+msts_crime %>% 
+   head(24*7*4) %>% 
+   mstl() %>% 
+   autoplot()
+
+msts_dec <- msts_crime %>% 
+   mstl()
+```
+Persiapan data cross-validasi
+
+```{r}
+length(msts_crime)
+crime_test <- tail(msts_crime, 24*7*4)
+crime_train <- head(msts_crime, (174337-(24*7*4)))
+```
+# Modelling
+
+
+```{r}
+kpss.test(crime_train)
+```
+Data stasioner
+
+Model dengan  HoltWinters
+
+```{r}
+crime_model <-  HoltWinters(crime_train, seasonal = "additive")
+```
+Modelling dengan ARIMA (tidak dikerjakan karena waktu prosesing yang cukup lama)
+
+```{r}
+#crime_arima <- auto.arima(crime_train, seasonal = T)
+```
+
+Fitting Model dengan STLM ARIMA dan ETS
+
+```{r}
+crime_stlm_arima <- stlm(crime_train, method = "arima", lambda = "auto")
+crime_stlm_ets <- stlm(crime_train, method = "ets", lambda = "auto")
+```
+
+
+#Forecast
+
+Selanjutnya dua model kita gunakan untuk memprediksi hasil 
+
+Prediksi model HoltWinters
+
+```{r}
+crime_forecast <- forecast(crime_model, 24*7*4)
+accuracy(crime_forecast, crime_test)
+```
+Prediksi model STLM ARIMA
+```{r}
+crime_forecast_stlm_arima <- forecast(crime_stlm_arima, 24*7*4)
+accuracy(crime_forecast_stlm_arima, crime_test)
+```
+Prediksi model STLM ETS
+
+```{r}
+crime_forecast_stlm_ets <- forecast(crime_stlm_ets, 24*7*4)
+accuracy(crime_forecast_stlm_ets, crime_test)
+```
+
+Performa model jika dinilai dari MAE maka yang terbaik adalah model STLM ETS karena memiliki MAE yang rendah dibandingkan dua model lainnya
+
+
+## Conclusion
+
+Dari hasil pembuatan model TS maka disimpulkan model STLM ETS merupakan model terbaik karena memiliki MAE yang lebih rendah dibandingkan model lainnya. 
+
+
+
+
